@@ -72,7 +72,7 @@ bool CrushWrapper::has_v4_buckets() const
     crush_bucket *b = crush->buckets[i];
     if (!b)
       continue;
-    if (b->type == CRUSH_BUCKET_STRAW2)
+    if (b->alg == CRUSH_BUCKET_STRAW2)
       return true;
   }
   return false;
@@ -192,6 +192,9 @@ bool CrushWrapper::_maybe_remove_last_instance(CephContext *cct, int item, bool 
   if (_search_item_exists(item)) {
     return false;
   }
+  if (item < 0 && _bucket_is_in_use(cct, item)) {
+    return false;
+  }
 
   if (item < 0 && !unlink_only) {
     crush_bucket *t = get_bucket(item);
@@ -218,6 +221,9 @@ int CrushWrapper::remove_item(CephContext *cct, int item, bool unlink_only)
       ldout(cct, 1) << "remove_item bucket " << item << " has " << t->size
 		    << " items, not empty" << dendl;
       return -ENOTEMPTY;
+    }
+    if (_bucket_is_in_use(cct, item)) {
+      return -EBUSY;
     }
   }
 
@@ -258,6 +264,22 @@ bool CrushWrapper::_search_item_exists(int item) const
   return false;
 }
 
+bool CrushWrapper::_bucket_is_in_use(CephContext *cct, int item)
+{
+  for (unsigned i = 0; i < crush->max_rules; ++i) {
+    crush_rule *r = crush->rules[i];
+    if (!r)
+      continue;
+    for (unsigned j = 0; j < r->len; ++j) {
+      if (r->steps[j].op == CRUSH_RULE_TAKE &&
+	  r->steps[j].arg1 == item) {
+	return true;
+      }
+    }
+  }
+  return false;
+}
+
 int CrushWrapper::_remove_item_under(CephContext *cct, int item, int ancestor, bool unlink_only)
 {
   ldout(cct, 5) << "_remove_item_under " << item << " under " << ancestor
@@ -293,6 +315,11 @@ int CrushWrapper::remove_item_under(CephContext *cct, int item, int ancestor, bo
 {
   ldout(cct, 5) << "remove_item_under " << item << " under " << ancestor
 		<< (unlink_only ? " unlink_only":"") << dendl;
+
+  if (!unlink_only && _bucket_is_in_use(cct, item)) {
+    return -EBUSY;
+  }
+
   int ret = _remove_item_under(cct, item, ancestor, unlink_only);
   if (ret < 0)
     return ret;
@@ -1438,6 +1465,7 @@ void CrushWrapper::dump_tunables(Formatter *f) const
   f->dump_int("require_feature_tunables3", (int)has_nondefault_tunables3());
   f->dump_int("has_v2_rules", (int)has_v2_rules());
   f->dump_int("has_v3_rules", (int)has_v3_rules());
+  f->dump_int("has_v4_buckets", (int)has_v4_buckets());
 }
 
 void CrushWrapper::dump_rules(Formatter *f) const
